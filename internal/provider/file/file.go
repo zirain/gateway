@@ -9,6 +9,9 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -57,19 +60,21 @@ func (p *Provider) Start(ctx context.Context) error {
 	// Start runnable servers.
 	go p.startHealthProbeServer(ctx)
 
-	dirs, files := path.ListDirsAndFiles(p.paths)
+	initDirs, initFiles := path.ListDirsAndFiles(p.paths)
 	// Initially load resources from paths on host.
-	if err := p.resourcesStore.LoadAndStore(files.UnsortedList(), dirs.UnsortedList()); err != nil {
+	if err := p.resourcesStore.LoadAndStore(initFiles.UnsortedList(), initDirs.UnsortedList()); err != nil {
 		return fmt.Errorf("failed to load resources into store: %w", err)
 	}
 
-	// aggregate all path channel into one
+	// Add paths to the watcher, and aggregate all path channels into one.
 	aggCh := make(chan fsnotify.Event)
 	for _, path := range p.paths {
 		if err := p.watcher.Add(path); err != nil {
 			p.logger.Error(err, "failed to add watch", "path", path)
+		} else {
+			p.logger.Info("Watching path added", "path", path)
 		}
-		p.logger.Info("Watching file changed", "path", path)
+
 		ch := p.watcher.Events(path)
 		go func(c chan fsnotify.Event) {
 			for msg := range c {
@@ -78,25 +83,61 @@ func (p *Provider) Start(ctx context.Context) error {
 		}(ch)
 	}
 
+	curDirs, curFiles := initDirs.Clone(), initFiles.Clone()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case event := <-aggCh:
+			// Ignore the irrelevant event.
+			if event.Has(fsnotify.Chmod) {
+				continue
+			}
+
+			// If a file change event is detected, regardless of the event type, it will be processed
+			// as a Remove event if the file does not exist, and as a Write event if the file exists.
+			//
+			// The reason to do so is quite straightforward, for text edit tools like vi/vim etc.
+			// They always create a temporary file, remove the existing one and replace it with the
+			// temporary file when file is saved. So the watcher will only receive:
+			// - Create event, with name "filename~".
+			// - Remove event, with name "filename", but the file actually exist.
+			if initFiles.Has(event.Name) {
+				p.logger.Info("file changed", "op", event.Op, "name", event.Name)
+
+				// For Write event, the file definitely exist.
+				if event.Has(fsnotify.Write) {
+					goto handle
+				}
+
+				_, err := os.Lstat(event.Name)
+				if err != nil && os.IsNotExist(err) {
+					curFiles.Delete(event.Name)
+				} else {
+					curFiles.Insert(event.Name)
+				}
+				goto handle
+			}
+
+			// Ignore the hidden or temporary file related change event under a directory.
+			if _, name := filepath.Split(event.Name); strings.HasPrefix(name, ".") ||
+				strings.HasSuffix(name, "~") {
+				continue
+			}
 			p.logger.Info("file changed", "op", event.Op, "name", event.Name)
+
 			switch event.Op {
-			case fsnotify.Create:
-				dirs.Insert(event.Name)
-				files.Insert(event.Name)
-			case fsnotify.Remove:
-				dirs.Delete(event.Name)
-				files.Delete(event.Name)
+			case fsnotify.Create, fsnotify.Write, fsnotify.Remove:
+				// Since we do not watch any events in the subdirectories, any events involving files
+				// modifications in current directory will trigger the event handling.
+				goto handle
 			default:
 				// do nothing
 				continue
 			}
 
-			p.resourcesStore.HandleEvent(event, files.UnsortedList(), dirs.UnsortedList())
+		handle:
+			p.resourcesStore.HandleEvent(curFiles.UnsortedList(), curDirs.UnsortedList())
 		}
 	}
 }

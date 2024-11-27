@@ -97,7 +97,6 @@ func (wk *worker) loop() {
 				}
 
 				sum, isDir := getHashSum(path)
-				fmt.Printf("isDir: %v sum: %v, ft.hash: %v\n", isDir, sum, ft.hash)
 				if isDir || !bytes.Equal(sum, ft.hash) {
 					ft.hash = sum
 					select {
