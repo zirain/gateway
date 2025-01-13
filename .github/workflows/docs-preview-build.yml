@@ -42,6 +42,21 @@ jobs:
         with:
           node-version: "18"
 
+      - name: Generate meta.json
+        env:
+          PR_NUMBER: ${{ github.event.number }}
+          URL_SLUG: ${{ github.event.number }}-${{ github.head_ref }}
+        run: |
+          # Sanitize the URL_SLUG to only contain alphanumeric characters and dashes
+          URL_SLUG=$(echo $URL_SLUG | tr -cd '[:alnum:]-')
+          echo "{\"pr_number\": \"$PR_NUMBER\", \"url_slug\": \"$URL_SLUG\"}" > meta.json
+          echo "PR_NUMBER=$(jq -r .pr_number meta.json)" >> $GITHUB_ENV
+          echo "URL_SLUG=$(jq -r .url_slug meta.json)" >> $GITHUB_ENV
+
+      - name: Sed base URL
+        run: |
+          sed -i -e 's/baseURL = "\/"/baseURL = "https:\/\/zirain.github.io\/eg-pr-preview\/${{ env.URL_SLUG }}\/"/g' site/hugo.toml
+
       - name: Install Site Dependencies and Build Site
         run: make docs
 
@@ -51,15 +66,6 @@ jobs:
         with:
           name: gateway_docs
           path: site/public
-
-      - name: Generate meta.json
-        env:
-          PR_NUMBER: ${{ github.event.number }}
-          URL_SLUG: ${{ github.event.number }}-${{ github.head_ref }}
-        run: |
-          # Sanitize the URL_SLUG to only contain alphanumeric characters and dashes
-          URL_SLUG=$(echo $URL_SLUG | tr -cd '[:alnum:]-')
-          echo "{\"pr_number\": \"$PR_NUMBER\", \"url_slug\": \"$URL_SLUG\"}" > meta.json
 
       - uses: actions/upload-artifact@v4
         with:
