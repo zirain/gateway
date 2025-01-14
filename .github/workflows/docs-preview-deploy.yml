@@ -64,3 +64,14 @@ jobs:
             Note that it might take a couple seconds for the update to show up after the preview_build workflow has completed.
           pr_number: ${{ env.PR_NUMBER }}
           comment_tag: "eg-preview"
+
+      # Add the 'docs-preview' label to the PR
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.addLabels({
+              issue_number: ${{ env.PR_NUMBER }},
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: ['docs-preview']
+            })
