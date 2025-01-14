@@ -52,7 +52,7 @@ jobs:
           branch: "main"
           clean: true
           target-folder: ${{ env.URL_SLUG }}
-          ssh-key: ${{ secrets.DEPLOY_KEY }}
+          token: ${{ secrets.DEPLOY_PAT }}
           commit-message: "Update preview for PR ${{ env.URL_SLUG }}"
           single-commit: true
 
