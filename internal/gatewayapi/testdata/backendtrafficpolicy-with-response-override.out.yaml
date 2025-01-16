@@ -348,6 +348,12 @@ xdsIR:
                     "error": "Internal Server Error"
                   }
                 contentType: application/json
+    readyListener:
+      address: 0.0.0.0
+      ipFamily: IPv4
+      path: /ready
+      port: 19001
+      prometheusEnabled: true
   default/gateway-2:
     accessLog:
       text:
@@ -412,3 +418,9 @@ xdsIR:
                     "error": "Internal Server Error"
                   }
                 contentType: application/json
+    readyListener:
+      address: 0.0.0.0
+      ipFamily: IPv4
+      path: /ready
+      port: 19001
+      prometheusEnabled: true
