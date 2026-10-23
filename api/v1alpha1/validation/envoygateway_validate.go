@@ -7,12 +7,14 @@ package validation
 
 import (
 	"fmt"
+	"math"
 	"net/url"
 	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/ptr"
+	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	egv1a1 "github.com/envoyproxy/gateway/api/v1alpha1"
 )
@@ -85,15 +87,19 @@ func ValidateEnvoyGateway(eg *egv1a1.EnvoyGateway) error {
 	return nil
 }
 
-// WarnEnvoyGateway returns deprecation warnings for the provided EnvoyGateway configuration.
+// WarnEnvoyGateway returns non-fatal warnings for the provided EnvoyGateway configuration:
+// deprecated fields, and fields that are accepted but have no effect.
 func WarnEnvoyGateway(eg *egv1a1.EnvoyGateway) []string {
-	if eg == nil || eg.ExtensionAPIs == nil {
+	if eg == nil {
 		return nil
 	}
+
 	var warnings []string
-	if eg.ExtensionAPIs.DisableLua != nil {
+
+	if eg.ExtensionAPIs != nil && eg.ExtensionAPIs.DisableLua != nil {
 		warnings = append(warnings, "disableLua is deprecated, use enableLua instead")
 	}
+
 	return warnings
 }
 
@@ -232,6 +238,11 @@ func validateEnvoyGatewayRateLimit(rateLimit *egv1a1.RateLimit) error {
 	if rateLimit == nil {
 		return nil
 	}
+
+	if err := validateRateLimitClusterSettings(rateLimit.ServiceSettings); err != nil {
+		return fmt.Errorf("invalid rateLimit.serviceSettings: %w", err)
+	}
+
 	if rateLimit.Backend.Type != egv1a1.RedisBackendType {
 		return fmt.Errorf("unsupported ratelimit backend %v", rateLimit.Backend.Type)
 	}
@@ -273,6 +284,143 @@ func ValidateRedisURL(redisURL string) error {
 	for _, host := range strings.Split(redisURL, ",") {
 		if _, err := url.Parse(host); err != nil {
 			return fmt.Errorf("unknown ratelimit redis url format: %w", err)
+		}
+	}
+	return nil
+}
+
+// validateRateLimitClusterSettings validates static configuration, which bypasses CRD admission.
+func validateRateLimitClusterSettings(settings *egv1a1.RateLimitClusterSettings) error {
+	if settings == nil {
+		return nil
+	}
+	cs := (&egv1a1.RateLimit{ServiceSettings: settings}).GetServiceSettings()
+
+	if err := validateRateLimitClusterCircuitBreaker(cs.CircuitBreaker); err != nil {
+		return err
+	}
+
+	if err := validateRateLimitClusterTimeout(cs.Timeout); err != nil {
+		return err
+	}
+
+	if cs.TCPKeepalive != nil {
+		if err := validateOptionalDuration("tcpKeepalive.idleTime", cs.TCPKeepalive.IdleTime); err != nil {
+			return err
+		}
+		if err := validateOptionalDuration("tcpKeepalive.interval", cs.TCPKeepalive.Interval); err != nil {
+			return err
+		}
+	}
+
+	if err := validateRateLimitClusterLoadBalancer(settings.LoadBalancer); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateRateLimitClusterLoadBalancer enforces the type enum and slowStart constraints
+// declared on RateLimitLoadBalancer, since static configuration bypasses CRD admission.
+func validateRateLimitClusterLoadBalancer(lb *egv1a1.RateLimitLoadBalancer) error {
+	if lb == nil {
+		return nil
+	}
+	switch lb.Type {
+	case egv1a1.RoundRobinLoadBalancerType, egv1a1.LeastRequestLoadBalancerType, egv1a1.RandomLoadBalancerType:
+	default:
+		return fmt.Errorf("loadBalancer.type: unsupported value %q", lb.Type)
+	}
+	if lb.SlowStart != nil {
+		if lb.Type == egv1a1.RandomLoadBalancerType {
+			return fmt.Errorf("loadBalancer.slowStart is unsupported for type %s", lb.Type)
+		}
+		if lb.SlowStart.Window == nil {
+			return fmt.Errorf("loadBalancer.slowStart.window is required")
+		}
+		return validateOptionalDuration("loadBalancer.slowStart.window", lb.SlowStart.Window)
+	}
+	return nil
+}
+
+func validateRateLimitClusterCircuitBreaker(cb *egv1a1.CircuitBreaker) error {
+	if cb == nil {
+		return nil
+	}
+
+	fields := []struct {
+		name string
+		val  *int64
+	}{
+		{"circuitBreaker.maxConnections", cb.MaxConnections},
+		{"circuitBreaker.maxPendingRequests", cb.MaxPendingRequests},
+		{"circuitBreaker.maxParallelRequests", cb.MaxParallelRequests},
+		{"circuitBreaker.maxParallelRetries", cb.MaxParallelRetries},
+		{"circuitBreaker.maxRequestsPerConnection", cb.MaxRequestsPerConnection},
+	}
+	if cb.PerEndpoint != nil {
+		fields = append(fields, struct {
+			name string
+			val  *int64
+		}{"circuitBreaker.perEndpoint.maxConnections", cb.PerEndpoint.MaxConnections})
+	}
+
+	for _, f := range fields {
+		if f.val == nil {
+			continue
+		}
+		if *f.val < 0 || *f.val > math.MaxUint32 {
+			return fmt.Errorf("%s value %d is out of range [0, %d]", f.name, *f.val, uint32(math.MaxUint32))
+		}
+	}
+
+	return nil
+}
+
+func validateRateLimitClusterTimeout(t *egv1a1.Timeout) error {
+	if t == nil {
+		return nil
+	}
+
+	if t.TCP != nil {
+		if err := validateOptionalDuration("timeout.tcp.connectTimeout", t.TCP.ConnectTimeout); err != nil {
+			return err
+		}
+	}
+
+	if t.HTTP != nil {
+
+		if err := validateOptionalDuration("timeout.http.connectionIdleTimeout", t.HTTP.ConnectionIdleTimeout); err != nil {
+			return err
+		}
+		if err := validateOptionalDuration("timeout.http.maxConnectionDuration", t.HTTP.MaxConnectionDuration); err != nil {
+			return err
+		}
+		if err := validateOptionalDuration("timeout.http.maxStreamDuration", t.HTTP.MaxStreamDuration); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validateOptionalDuration parses d, when set, the same way IR translation does
+// (time.ParseDuration), and checks Envoy duration bounds at config-load time.
+func validateOptionalDuration(field string, d *gwapiv1.Duration) error {
+	if d == nil {
+		return nil
+	}
+	value, err := time.ParseDuration(string(*d))
+	if err != nil {
+		return fmt.Errorf("%s: invalid duration %q: %w", field, string(*d), err)
+	}
+	if value < 0 {
+		return fmt.Errorf("%s: duration must not be negative", field)
+	}
+	switch field {
+	case "timeout.tcp.connectTimeout", "loadBalancer.slowStart.window":
+		if value == 0 {
+			return fmt.Errorf("%s: duration must be greater than zero", field)
 		}
 	}
 	return nil

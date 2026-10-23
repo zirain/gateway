@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	egv1a1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	"github.com/envoyproxy/gateway/internal/gatewayapi/resource"
 	"github.com/envoyproxy/gateway/internal/ir"
 )
@@ -52,7 +53,31 @@ func (t *Translator) ProcessGlobalResources(resources *resource.Resources, xdsIR
 				xdsIR.GlobalResources = &ir.GlobalResources{}
 			}
 			if containsGlobalRateLimit(xdsIR.HTTP) {
-				xdsIR.GlobalResources.RateLimitServiceCluster = t.processRateLimitServiceCluster(resources)
+				dest := t.processRateLimitServiceCluster(resources)
+
+				var backendSetting *egv1a1.BackendSettings
+				if t.RateLimitClusterSettings != nil {
+					cs := t.RateLimitClusterSettings.DeepCopy()
+					setRateLimitCircuitBreakerDefaults(cs.CircuitBreaker)
+					backendSetting = &egv1a1.BackendSettings{
+						ClusterSettings: *cs,
+					}
+				}
+				tf, err := translateExtServiceBackendSettings(backendSetting)
+				if err != nil {
+					return fmt.Errorf("invalid rate limit cluster settings: %w", err)
+				}
+				traffic := tf.ClusterFeatures()
+
+				// Only populate the field when there's something to say: either a discovered
+				// destination or cluster-scoped traffic settings.
+				if dest != nil || traffic != nil {
+					rlsc := &ir.RateLimitServiceCluster{Traffic: traffic}
+					if dest != nil {
+						rlsc.RouteDestination = *dest
+					}
+					xdsIR.GlobalResources.RateLimitServiceCluster = rlsc
+				}
 			}
 			xdsIR.GlobalResources.EnvoyClientCertificate = &ir.TLSCertificate{
 				Name:        irGlobalConfigName(envoyTLSSecret),
@@ -175,4 +200,16 @@ func containsRemoteWasms(httpListeners []*ir.HTTPListener) bool {
 		}
 	}
 	return false
+}
+
+// setRateLimitCircuitBreakerDefaults fills in the kubebuilder default of the rate limit service
+// cluster's per-endpoint circuit breaker, which, like the health check defaults, is never applied
+// to static configuration. Without it an explicitly enabled per-endpoint breaker is dropped.
+func setRateLimitCircuitBreakerDefaults(cb *egv1a1.CircuitBreaker) {
+	if cb == nil || cb.PerEndpoint == nil {
+		return
+	}
+	if cb.PerEndpoint.MaxConnections == nil {
+		cb.PerEndpoint.MaxConnections = new(int64(1024))
+	}
 }

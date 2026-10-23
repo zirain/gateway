@@ -28,6 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gwapiv1b1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 	"sigs.k8s.io/yaml"
 
@@ -57,6 +58,7 @@ func TestTranslate(t *testing.T) {
 		LuaEnvoyExtensionPolicyDisabled bool
 		SDSEnabled                      bool
 		PerResourceSystemCASecret       bool
+		RateLimitClusterSettings        *egv1a1.RateLimitClusterSettings
 		EnvoyProxyPatchDisabled         bool
 		CTPHTTP1ClientScopeOnly         bool
 	}{
@@ -137,6 +139,22 @@ func TestTranslate(t *testing.T) {
 			SDSEnabled:     true,
 		},
 		{
+			name:                    "ratelimit-cluster-settings",
+			EnvoyPatchPolicyEnabled: true,
+			BackendEnabled:          true,
+			RateLimitClusterSettings: &egv1a1.RateLimitClusterSettings{
+				CircuitBreaker: &egv1a1.CircuitBreaker{
+					MaxRequestsPerConnection: new(int64(10)),
+					PerEndpoint:              &egv1a1.PerEndpointCircuitBreakers{},
+				},
+				Timeout: &egv1a1.RateLimitTimeout{
+					HTTP: &egv1a1.RateLimitHTTPTimeout{
+						MaxConnectionDuration: new(gwapiv1.Duration("30s")),
+					},
+				},
+			},
+		},
+		{
 			name:                    "envoyproxy-patch-disabled",
 			EnvoyProxyPatchDisabled: true,
 		},
@@ -186,6 +204,7 @@ func TestTranslate(t *testing.T) {
 			luaEnvoyExtensionPolicyDisabled := false
 			sdsEnabled := false
 			perResourceSystemCASecret := false
+			var rateLimitClusterSettings *egv1a1.RateLimitClusterSettings
 			envoyProxyPatchDisabled := false
 			ctpHTTP1ClientScopeOnly := false
 
@@ -198,6 +217,7 @@ func TestTranslate(t *testing.T) {
 					luaEnvoyExtensionPolicyDisabled = config.LuaEnvoyExtensionPolicyDisabled
 					sdsEnabled = config.SDSEnabled
 					perResourceSystemCASecret = config.PerResourceSystemCASecret
+					rateLimitClusterSettings = config.RateLimitClusterSettings
 					envoyProxyPatchDisabled = config.EnvoyProxyPatchDisabled
 					ctpHTTP1ClientScopeOnly = config.CTPHTTP1ClientScopeOnly
 				}
@@ -207,6 +227,7 @@ func TestTranslate(t *testing.T) {
 				GatewayControllerName:           egv1a1.GatewayControllerName,
 				GatewayClassName:                "envoy-gateway-class",
 				GlobalRateLimitEnabled:          true,
+				RateLimitClusterSettings:        (&egv1a1.RateLimit{ServiceSettings: rateLimitClusterSettings}).GetServiceSettings(),
 				EnvoyPatchPolicyEnabled:         envoyPatchPolicyEnabled,
 				BackendEnabled:                  backendEnabled,
 				SDSSecretRefEnabled:             sdsEnabled,

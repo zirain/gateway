@@ -387,6 +387,7 @@ _Appears in:_
 - [BackendSettings](#backendsettings)
 - [BackendTrafficPolicySpec](#backendtrafficpolicyspec)
 - [ClusterSettings](#clustersettings)
+- [RateLimitClusterSettings](#ratelimitclustersettings)
 
 | Field | Type | Required | Default | Description |
 | ---   | ---  | ---      | ---     | ---         |
@@ -1007,6 +1008,7 @@ _Appears in:_
 - [BackendSettings](#backendsettings)
 - [BackendTrafficPolicySpec](#backendtrafficpolicyspec)
 - [ClusterSettings](#clustersettings)
+- [RateLimitClusterSettings](#ratelimitclustersettings)
 
 | Field | Type | Required | Default | Description |
 | ---   | ---  | ---      | ---     | ---         |
@@ -3255,6 +3257,7 @@ _Appears in:_
 - [BackendTrafficPolicySpec](#backendtrafficpolicyspec)
 - [ClientTrafficPolicySpec](#clienttrafficpolicyspec)
 - [ClusterSettings](#clustersettings)
+- [RateLimitClusterSettings](#ratelimitclustersettings)
 
 | Field | Type | Required | Default | Description |
 | ---   | ---  | ---      | ---     | ---         |
@@ -4468,6 +4471,7 @@ LoadBalancerType specifies the types of LoadBalancer.
 
 _Appears in:_
 - [LoadBalancer](#loadbalancer)
+- [RateLimitLoadBalancer](#ratelimitloadbalancer)
 
 | Value | Description |
 | ----- | ----------- |
@@ -5734,6 +5738,29 @@ _Appears in:_
 | `timeout` | _[Duration](https://gateway-api.sigs.k8s.io/reference/api-spec/1.5/spec/#duration)_ |  false  |  | Timeout specifies the timeout period for the proxy to access the ratelimit server<br />If not set, timeout is 20ms. |
 | `failClosed` | _boolean_ |  true  |  | FailClosed is a switch used to control the flow of traffic<br />when the response from the ratelimit server cannot be obtained.<br />If FailClosed is false, let the traffic pass,<br />otherwise, don't let the traffic pass and return 500.<br />If not set, FailClosed is False. |
 | `telemetry` | _[RateLimitTelemetry](#ratelimittelemetry)_ |  false  |  | Telemetry defines telemetry configuration for RateLimit. |
+| `serviceSettings` | _[RateLimitClusterSettings](#ratelimitclustersettings)_ |  false  |  | ServiceSettings holds configuration for managing the connection to the rate limit<br />service, such as circuit breakers, timeouts, health checks, and load balancing. |
+
+
+#### RateLimitClusterSettings
+
+
+
+RateLimitClusterSettings defines configuration for how Envoy connects to the managed
+rate limit service over HTTP/2 and mTLS. Only settings supported by this EDS cluster
+are exposed. Fields are listed explicitly so additions to ClusterSettings do not
+automatically expand this API.
+
+_Appears in:_
+- [RateLimit](#ratelimit)
+
+| Field | Type | Required | Default | Description |
+| ---   | ---  | ---      | ---     | ---         |
+| `loadBalancer` | _[RateLimitLoadBalancer](#ratelimitloadbalancer)_ |  false  |  | LoadBalancer selects the policy used to distribute requests across service endpoints.<br />Defaults to LeastRequest. |
+| `tcpKeepalive` | _[TCPKeepalive](#tcpkeepalive)_ |  false  |  | TCPKeepalive configures keepalive probes on upstream connections. |
+| `circuitBreaker` | _[CircuitBreaker](#circuitbreaker)_ |  false  |  | CircuitBreaker limits upstream connections and requests. |
+| `timeout` | _[RateLimitTimeout](#ratelimittimeout)_ |  false  |  | Timeout configures upstream connection and stream timeouts. |
+| `connection` | _[BackendConnection](#backendconnection)_ |  false  |  | Connection configures upstream connection buffer limits. |
+| `http2` | _[HTTP2Settings](#http2settings)_ |  false  |  | HTTP2 configures the HTTP/2 connections used by the gRPC rate limit service. |
 
 
 #### RateLimitCost
@@ -5827,6 +5854,40 @@ _Appears in:_
 | Value | Description |
 | ----- | ----------- |
 | `Redis` | RedisBackendType uses a redis database for the rate limit service.<br /> | 
+
+
+#### RateLimitHTTPTimeout
+
+
+
+RateLimitHTTPTimeout configures cluster-scoped HTTP timeouts.
+
+_Appears in:_
+- [RateLimitTimeout](#ratelimittimeout)
+
+| Field | Type | Required | Default | Description |
+| ---   | ---  | ---      | ---     | ---         |
+| `connectionIdleTimeout` | _[Duration](https://gateway-api.sigs.k8s.io/reference/api-spec/1.5/spec/#duration)_ |  false  |  | The idle timeout for an HTTP connection. Idle time is defined as a period in which there are no active requests in the connection.<br />Default: 1 hour. |
+| `maxConnectionDuration` | _[Duration](https://gateway-api.sigs.k8s.io/reference/api-spec/1.5/spec/#duration)_ |  false  |  | The maximum duration of an HTTP connection.<br />Default: unlimited. |
+| `maxStreamDuration` | _[Duration](https://gateway-api.sigs.k8s.io/reference/api-spec/1.5/spec/#duration)_ |  false  |  | MaxStreamDuration is the maximum duration for a stream to complete. This timeout measures the time<br />from when the request is sent until the response stream is fully consumed and does not apply to<br />non-streaming requests.<br />When set to "0s", no max duration is applied and streams can run indefinitely. |
+
+
+#### RateLimitLoadBalancer
+
+
+
+RateLimitLoadBalancer configures load balancing across the rate limit service endpoints.
+Policies that depend on request attributes (ConsistentHash, EndpointOverride) or on
+endpoint load reports (BackendUtilization) are not supported, since the rate limit
+service cluster has no associated route and the service doesn't report its load.
+
+_Appears in:_
+- [RateLimitClusterSettings](#ratelimitclustersettings)
+
+| Field | Type | Required | Default | Description |
+| ---   | ---  | ---      | ---     | ---         |
+| `type` | _[LoadBalancerType](#loadbalancertype)_ |  true  |  | Type decides the type of Load Balancer policy.<br />Valid values are "LeastRequest", "Random" and "RoundRobin". |
+| `slowStart` | _[SlowStart](#slowstart)_ |  false  |  | SlowStart defines the configuration related to the slow start load balancer policy.<br />If set, during slow start window, traffic sent to the newly added hosts will gradually increase.<br />Supported for RoundRobin and LeastRequest load balancers. |
 
 
 #### RateLimitMetrics
@@ -5944,6 +6005,21 @@ _Appears in:_
 | ---   | ---  | ---      | ---     | ---         |
 | `metrics` | _[RateLimitMetrics](#ratelimitmetrics)_ |  true  |  | Metrics defines metrics configuration for RateLimit. |
 | `tracing` | _[RateLimitTracing](#ratelimittracing)_ |  true  |  | Tracing defines traces configuration for RateLimit. |
+
+
+#### RateLimitTimeout
+
+
+
+RateLimitTimeout configures timeouts that apply to the rate limit service cluster.
+
+_Appears in:_
+- [RateLimitClusterSettings](#ratelimitclustersettings)
+
+| Field | Type | Required | Default | Description |
+| ---   | ---  | ---      | ---     | ---         |
+| `tcp` | _[TCPTimeout](#tcptimeout)_ |  false  |  | TCP configures connection establishment timeouts. |
+| `http` | _[RateLimitHTTPTimeout](#ratelimithttptimeout)_ |  false  |  | HTTP configures HTTP/2 connection and stream timeouts. |
 
 
 #### RateLimitTracing
@@ -6653,6 +6729,7 @@ SlowStart defines the configuration related to the slow start load balancer poli
 
 _Appears in:_
 - [LoadBalancer](#loadbalancer)
+- [RateLimitLoadBalancer](#ratelimitloadbalancer)
 
 | Field | Type | Required | Default | Description |
 | ---   | ---  | ---      | ---     | ---         |
@@ -6889,6 +6966,7 @@ _Appears in:_
 - [BackendTrafficPolicySpec](#backendtrafficpolicyspec)
 - [ClientTrafficPolicySpec](#clienttrafficpolicyspec)
 - [ClusterSettings](#clustersettings)
+- [RateLimitClusterSettings](#ratelimitclustersettings)
 
 | Field | Type | Required | Default | Description |
 | ---   | ---  | ---      | ---     | ---         |
@@ -6904,6 +6982,7 @@ _Appears in:_
 
 
 _Appears in:_
+- [RateLimitTimeout](#ratelimittimeout)
 - [Timeout](#timeout)
 
 | Field | Type | Required | Default | Description |

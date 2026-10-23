@@ -739,6 +739,123 @@ type RateLimit struct {
 	// Telemetry defines telemetry configuration for RateLimit.
 	// +optional
 	Telemetry *RateLimitTelemetry `json:"telemetry,omitempty"`
+
+	// ServiceSettings holds configuration for managing the connection to the rate limit
+	// service, such as circuit breakers, timeouts, health checks, and load balancing.
+	//
+	// +optional
+	ServiceSettings *RateLimitClusterSettings `json:"serviceSettings,omitempty"`
+}
+
+// RateLimitClusterSettings defines configuration for how Envoy connects to the managed
+// rate limit service over HTTP/2 and mTLS. Only settings supported by this EDS cluster
+// are exposed. Fields are listed explicitly so additions to ClusterSettings do not
+// automatically expand this API.
+type RateLimitClusterSettings struct {
+	// LoadBalancer selects the policy used to distribute requests across service endpoints.
+	// Defaults to LeastRequest.
+	// +optional
+	LoadBalancer *RateLimitLoadBalancer `json:"loadBalancer,omitempty"`
+
+	// TCPKeepalive configures keepalive probes on upstream connections.
+	// +optional
+	TCPKeepalive *TCPKeepalive `json:"tcpKeepalive,omitempty"`
+
+	// CircuitBreaker limits upstream connections and requests.
+	// +optional
+	CircuitBreaker *CircuitBreaker `json:"circuitBreaker,omitempty"`
+
+	// Timeout configures upstream connection and stream timeouts.
+	// +optional
+	Timeout *RateLimitTimeout `json:"timeout,omitempty"`
+
+	// Connection configures upstream connection buffer limits.
+	// +optional
+	Connection *BackendConnection `json:"connection,omitempty"`
+
+	// HTTP2 configures the HTTP/2 connections used by the gRPC rate limit service.
+	// +optional
+	HTTP2 *HTTP2Settings `json:"http2,omitempty"`
+}
+
+// GetServiceSettings adapts the supported rate limit settings for shared cluster
+// translation. The returned settings share nested values with the configuration;
+// callers must deep copy them before applying defaults or other mutations.
+func (r *RateLimit) GetServiceSettings() *ClusterSettings {
+	if r == nil || r.ServiceSettings == nil {
+		return nil
+	}
+	s := r.ServiceSettings
+	cs := &ClusterSettings{
+		TCPKeepalive:   s.TCPKeepalive,
+		CircuitBreaker: s.CircuitBreaker,
+		Connection:     s.Connection,
+		HTTP2:          s.HTTP2,
+	}
+	if s.LoadBalancer != nil {
+		cs.LoadBalancer = &LoadBalancer{Type: s.LoadBalancer.Type, SlowStart: s.LoadBalancer.SlowStart}
+	}
+	if s.Timeout != nil {
+		cs.Timeout = &Timeout{TCP: s.Timeout.TCP}
+		if h := s.Timeout.HTTP; h != nil {
+			cs.Timeout.HTTP = &HTTPTimeout{ConnectionIdleTimeout: h.ConnectionIdleTimeout, MaxConnectionDuration: h.MaxConnectionDuration, MaxStreamDuration: h.MaxStreamDuration}
+		}
+	}
+	return cs
+}
+
+// RateLimitLoadBalancer configures load balancing across the rate limit service endpoints.
+// Policies that depend on request attributes (ConsistentHash, EndpointOverride) or on
+// endpoint load reports (BackendUtilization) are not supported, since the rate limit
+// service cluster has no associated route and the service doesn't report its load.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.slowStart) ? self.type != 'Random' : true",message="SlowStart is only supported for RoundRobin and LeastRequest load balancers."
+type RateLimitLoadBalancer struct {
+	// Type decides the type of Load Balancer policy.
+	// Valid values are "LeastRequest", "Random" and "RoundRobin".
+	//
+	// +kubebuilder:validation:Enum=LeastRequest;Random;RoundRobin
+	Type LoadBalancerType `json:"type"`
+
+	// SlowStart defines the configuration related to the slow start load balancer policy.
+	// If set, during slow start window, traffic sent to the newly added hosts will gradually increase.
+	// Supported for RoundRobin and LeastRequest load balancers.
+	//
+	// +optional
+	SlowStart *SlowStart `json:"slowStart,omitempty"`
+}
+
+// RateLimitTimeout configures timeouts that apply to the rate limit service cluster.
+type RateLimitTimeout struct {
+	// TCP configures connection establishment timeouts.
+	// +optional
+	TCP *TCPTimeout `json:"tcp,omitempty"`
+	// HTTP configures HTTP/2 connection and stream timeouts.
+	// +optional
+	HTTP *RateLimitHTTPTimeout `json:"http,omitempty"`
+}
+
+// RateLimitHTTPTimeout configures cluster-scoped HTTP timeouts.
+type RateLimitHTTPTimeout struct {
+	// The idle timeout for an HTTP connection. Idle time is defined as a period in which there are no active requests in the connection.
+	// Default: 1 hour.
+	//
+	// +optional
+	ConnectionIdleTimeout *gwapiv1.Duration `json:"connectionIdleTimeout,omitempty"`
+
+	// The maximum duration of an HTTP connection.
+	// Default: unlimited.
+	//
+	// +optional
+	MaxConnectionDuration *gwapiv1.Duration `json:"maxConnectionDuration,omitempty"`
+
+	// MaxStreamDuration is the maximum duration for a stream to complete. This timeout measures the time
+	// from when the request is sent until the response stream is fully consumed and does not apply to
+	// non-streaming requests.
+	// When set to "0s", no max duration is applied and streams can run indefinitely.
+	//
+	// +optional
+	MaxStreamDuration *gwapiv1.Duration `json:"maxStreamDuration,omitempty"`
 }
 
 type RateLimitTelemetry struct {

@@ -6,6 +6,7 @@
 package validation
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -1509,6 +1510,23 @@ func TestWarnEnvoyGateway(t *testing.T) {
 			},
 			expected: nil,
 		},
+		{
+			name: "rateLimit serviceSettings with supported fields only",
+			eg: &egv1a1.EnvoyGateway{
+				EnvoyGatewaySpec: egv1a1.EnvoyGatewaySpec{
+					Gateway:  egv1a1.DefaultGateway(),
+					Provider: egv1a1.DefaultEnvoyGatewayProvider(),
+					RateLimit: &egv1a1.RateLimit{
+						ServiceSettings: &egv1a1.RateLimitClusterSettings{
+							CircuitBreaker: &egv1a1.CircuitBreaker{
+								MaxRequestsPerConnection: new(int64(10)),
+							},
+						},
+					},
+				},
+			},
+			expected: nil,
+		},
 	}
 
 	for _, tc := range testCases {
@@ -1677,9 +1695,155 @@ func TestValidateEnvoyGatewayRateLimitURLRef(t *testing.T) {
 	}
 }
 
+func TestValidateRateLimitClusterSettings(t *testing.T) {
+	cases := []struct {
+		name      string
+		cs        *egv1a1.RateLimitClusterSettings
+		expectErr string
+	}{
+		{
+			name: "nil cluster settings",
+			cs:   nil,
+		},
+		{
+			name: "valid circuit breaker and timeout",
+			cs: &egv1a1.RateLimitClusterSettings{
+				CircuitBreaker: &egv1a1.CircuitBreaker{
+					MaxRequestsPerConnection: new(int64(10)),
+				},
+				Timeout: &egv1a1.RateLimitTimeout{
+					HTTP: &egv1a1.RateLimitHTTPTimeout{
+						MaxConnectionDuration: new(gwapiv1.Duration("30s")),
+					},
+				},
+			},
+		},
+		{
+			name: "negative circuit breaker value",
+			cs: &egv1a1.RateLimitClusterSettings{
+				CircuitBreaker: &egv1a1.CircuitBreaker{
+					MaxRequestsPerConnection: new(int64(-1)),
+				},
+			},
+			expectErr: "circuitBreaker.maxRequestsPerConnection value -1 is out of range",
+		},
+		{
+			name: "circuit breaker value too large",
+			cs: &egv1a1.RateLimitClusterSettings{
+				CircuitBreaker: &egv1a1.CircuitBreaker{
+					MaxConnections: new(int64(math.MaxUint32 + 1)),
+				},
+			},
+			expectErr: "circuitBreaker.maxConnections value 4294967296 is out of range",
+		},
+		{
+			name: "negative per-endpoint circuit breaker value",
+			cs: &egv1a1.RateLimitClusterSettings{
+				CircuitBreaker: &egv1a1.CircuitBreaker{
+					PerEndpoint: &egv1a1.PerEndpointCircuitBreakers{
+						MaxConnections: new(int64(-1)),
+					},
+				},
+			},
+			expectErr: "circuitBreaker.perEndpoint.maxConnections value -1 is out of range",
+		},
+		{
+			name: "malformed timeout duration",
+			cs: &egv1a1.RateLimitClusterSettings{
+				Timeout: &egv1a1.RateLimitTimeout{
+					HTTP: &egv1a1.RateLimitHTTPTimeout{
+						MaxConnectionDuration: new(gwapiv1.Duration("not-a-duration")),
+					},
+				},
+			},
+			expectErr: "timeout.http.maxConnectionDuration: invalid duration",
+		},
+		{
+			name: "malformed tcp connect timeout",
+			cs: &egv1a1.RateLimitClusterSettings{
+				Timeout: &egv1a1.RateLimitTimeout{
+					TCP: &egv1a1.TCPTimeout{
+						ConnectTimeout: new(gwapiv1.Duration("not-a-duration")),
+					},
+				},
+			},
+			expectErr: "timeout.tcp.connectTimeout: invalid duration",
+		},
+		{
+			name: "malformed tcp keepalive duration",
+			cs: &egv1a1.RateLimitClusterSettings{
+				TCPKeepalive: &egv1a1.TCPKeepalive{
+					IdleTime: new(gwapiv1.Duration("not-a-duration")),
+				},
+			},
+			expectErr: "tcpKeepalive.idleTime: invalid duration",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateRateLimitClusterSettings(tc.cs)
+			if tc.expectErr != "" {
+				require.ErrorContains(t, err, tc.expectErr)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestValidateRedisURL(t *testing.T) {
 	require.NoError(t, ValidateRedisURL("redis.redis.svc:6379"))
 	require.NoError(t, ValidateRedisURL("a.redis.svc:6379,b.redis.svc:6379"))
 	require.ErrorContains(t, ValidateRedisURL(""), "ratelimit redis url is empty")
 	require.ErrorContains(t, ValidateRedisURL(":foo"), "unknown ratelimit redis url format")
+}
+
+func TestValidateRateLimitClusterLoadBalancer(t *testing.T) {
+	validate := func(lb *egv1a1.RateLimitLoadBalancer) error {
+		return validateRateLimitClusterSettings(&egv1a1.RateLimitClusterSettings{LoadBalancer: lb})
+	}
+	for _, typ := range []egv1a1.LoadBalancerType{egv1a1.ConsistentHashLoadBalancerType, egv1a1.BackendUtilizationLoadBalancerType, egv1a1.DynamicModuleLoadBalancerType, "", "Unknown"} {
+		t.Run(string(typ), func(t *testing.T) {
+			require.ErrorContains(t, validate(&egv1a1.RateLimitLoadBalancer{Type: typ}), "loadBalancer.type")
+		})
+	}
+	for _, typ := range []egv1a1.LoadBalancerType{egv1a1.RoundRobinLoadBalancerType, egv1a1.LeastRequestLoadBalancerType, egv1a1.RandomLoadBalancerType} {
+		t.Run(string(typ), func(t *testing.T) {
+			require.NoError(t, validate(&egv1a1.RateLimitLoadBalancer{Type: typ}))
+		})
+	}
+	window := gwapiv1.Duration("10s")
+	require.NoError(t, validate(&egv1a1.RateLimitLoadBalancer{Type: egv1a1.RoundRobinLoadBalancerType, SlowStart: &egv1a1.SlowStart{Window: &window}}))
+	require.ErrorContains(t, validate(&egv1a1.RateLimitLoadBalancer{Type: egv1a1.RandomLoadBalancerType, SlowStart: &egv1a1.SlowStart{Window: &window}}), "loadBalancer.slowStart")
+	require.ErrorContains(t, validate(&egv1a1.RateLimitLoadBalancer{Type: egv1a1.LeastRequestLoadBalancerType, SlowStart: &egv1a1.SlowStart{}}), "loadBalancer.slowStart.window")
+}
+
+func TestValidateRateLimitClusterDurationBounds(t *testing.T) {
+	cases := []struct {
+		name     string
+		settings func(*gwapiv1.Duration) *egv1a1.RateLimitClusterSettings
+		positive bool
+	}{
+		{"connect timeout", func(d *gwapiv1.Duration) *egv1a1.RateLimitClusterSettings {
+			return &egv1a1.RateLimitClusterSettings{Timeout: &egv1a1.RateLimitTimeout{TCP: &egv1a1.TCPTimeout{ConnectTimeout: d}}}
+		}, true},
+		{"idle timeout", func(d *gwapiv1.Duration) *egv1a1.RateLimitClusterSettings {
+			return &egv1a1.RateLimitClusterSettings{Timeout: &egv1a1.RateLimitTimeout{HTTP: &egv1a1.RateLimitHTTPTimeout{ConnectionIdleTimeout: d}}}
+		}, false},
+		{"keepalive", func(d *gwapiv1.Duration) *egv1a1.RateLimitClusterSettings {
+			return &egv1a1.RateLimitClusterSettings{TCPKeepalive: &egv1a1.TCPKeepalive{IdleTime: d}}
+		}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.ErrorContains(t, validateRateLimitClusterSettings(tc.settings(new(gwapiv1.Duration("-1s")))), "must not be negative")
+			err := validateRateLimitClusterSettings(tc.settings(new(gwapiv1.Duration("0s"))))
+			if tc.positive {
+				require.ErrorContains(t, err, "must be greater than zero")
+			} else {
+				require.NoError(t, err)
+			}
+			require.NoError(t, validateRateLimitClusterSettings(tc.settings(new(gwapiv1.Duration("1s")))))
+		})
+	}
 }
